@@ -9,7 +9,10 @@ use move_command_line_common::{
 use move_compiler::{
     compiled_unit::AnnotatedCompiledUnit,
     diagnostics::*,
-    shared::{Flags, NumericalAddress},
+    shared::{
+        ast_debug::{AstDebug, AstWriter},
+        Flags, NumericalAddress,
+    },
     unit_test, CommentMap, Compiler, SteppedCompiler, PASS_CFGIR, PASS_PARSER,
 };
 use std::{collections::BTreeMap, fs, path::Path};
@@ -187,6 +190,10 @@ fn move_check_for_errors(
         if compilation_env.flags().is_testing() {
             unit_test::plan_builder::construct_test_plan(compilation_env, None, &cfgir);
         }
+        let mut ast_writer = AstWriter::normal();
+        cfgir.ast_debug(&mut ast_writer);
+        println!("cfgir = {}", ast_writer);
+        println!("compilation_env = {:?}", &compilation_env);
 
         let (units, diags) = compiler.at_cfgir(cfgir).build()?;
         Ok((units, diags))
