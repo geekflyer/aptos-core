@@ -56,6 +56,16 @@ resources:
     cpu: 14
     memory: 26Gi
 
+verticalPodAutoscalingEnabled: false
+  
+verticalPodAutoscalingBound:
+  minAllowed:
+    cpu: 
+    memory:
+  maxAllowed:
+    cpu: 
+    memory:
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

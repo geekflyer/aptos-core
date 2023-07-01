@@ -199,3 +199,31 @@ variable "manage_via_tf" {
   description = "Whether to manage the aptos-node k8s workload via Terraform. If set to false, the helm_release resource will still be created and updated when values change, but it may not be updated on every apply"
   default     = true
 }
+
+variable "enable_vertical_pod_autoscaling" {
+  description = "vertical pod autoscaling"
+  default = false
+}
+
+variable "vertical_pod_autoscaling_min_allowed_cpu" {
+  description = "min allowed cpu for VPA"
+  default = 200
+}
+
+variable "vertical_pod_autoscaling_max_allowed_cpu" {
+  description = "max allowed cpu for VPA"
+  default = 1000
+}
+
+variable "vertical_pod_autoscaling_min_allowed_memory" {
+  description = "min allowed memory for VPA"
+  default = 200
+}
+
+variable "vertical_pod_autoscaling_max_allowed_memory" {
+  description = "max allowed memory for VPA"
+  default = 1000
+}
+
+
+
