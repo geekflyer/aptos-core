@@ -88,7 +88,7 @@ jobs:
   test-replay:
     if: ${{ github.event_name == 'pull_request' }}
     needs: determine-test-metadata
-    uses: aptos-labs/aptos-core/.github/workflows/workflow-run-replay-verify.yaml@main
+    uses: ./.github/workflows/workflow-run-replay-verify.yaml
     secrets: inherit
     with:
       GIT_SHA: ${{ github.event.pull_request.head.sha }}
