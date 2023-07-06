@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    dag::{anchor_election::AnchorElection, dag_store::Dag, CertifiedNode},
+    dag::{anchor_election::AnchorElection, dag_store::Dag, types::NodeMetadata, CertifiedNode},
     experimental::buffer_manager::OrderedBlocks,
 };
 use aptos_consensus_types::common::Round;
@@ -68,7 +68,7 @@ impl CommitRule {
                 if dag_reader
                     .check_votes_for_node(anchor_node.metadata(), &self.epoch_state.verifier)
                 {
-                    return Some(anchor_node);
+                    return Some(anchor_node.clone());
                 }
             }
             current_round += 2;
@@ -77,26 +77,39 @@ impl CommitRule {
     }
 
     pub fn find_first_anchor_to_commit(
-        &mut self,
-        current_anchor: Arc<CertifiedNode>,
+        &self,
+        mut current_anchor: Arc<CertifiedNode>,
     ) -> Arc<CertifiedNode> {
         let dag_reader = self.dag.read();
         let anchor_round = current_anchor.round();
-        let first_anchor = dag_reader
-            .reachable(&current_anchor)
-            .filter(|node| node.round() >= self.lowest_unordered_round)
-            // the same parity of the current anchor round
-            .filter(|node| (node.round() ^ anchor_round) & 1 == 0)
-            // anchor node, we can cache the election result per round
-            .filter(|node| *node.author() == self.anchor_election.get_anchor(node.round()))
-            .last()
-            .unwrap();
-        self.lowest_unordered_round = first_anchor.round() + 1;
-        first_anchor.clone()
+        let is_anchor = |metadata: &NodeMetadata| -> bool {
+            (metadata.round() ^ anchor_round) & 1 == 0
+                && *metadata.author() == self.anchor_election.get_anchor(metadata.round())
+        };
+        while let Some(next_anchor) = dag_reader
+            .reachable(&current_anchor, Some(self.lowest_unordered_round))
+            .map(|node_status| node_status.as_node())
+            .find(|node| is_anchor(node.metadata()))
+        {
+            current_anchor = next_anchor.clone();
+        }
+        current_anchor.clone()
     }
 
     pub fn finalize_order(&mut self, anchor: Arc<CertifiedNode>) {
-        let dag_writer = self.dag.write();
-        let _commit_nodes: Vec<_> = dag_writer.reachable(&anchor).collect();
+        let _failed_anchors: Vec<_> = (self.lowest_unordered_round..anchor.round())
+            .step_by(2)
+            .map(|failed_round| self.anchor_election.get_anchor(failed_round))
+            .collect();
+        self.lowest_unordered_round = anchor.round() + 1;
+
+        let mut dag_writer = self.dag.write();
+        let _commit_nodes: Vec<_> = dag_writer
+            .reachable_mut(&anchor, None)
+            .map(|node_status| {
+                node_status.mark_as_ordered();
+                node_status.as_node()
+            })
+            .collect();
     }
 }
