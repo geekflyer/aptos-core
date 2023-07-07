@@ -15,7 +15,7 @@ use std::{
 };
 
 fn process_file() -> Result<Vec<String>, io::Error> {
-    let file = File::open("./test.csv")?;
+    let file = File::open("./test1000.csv")?;
     let reader = BufReader::new(file);
     reader.lines().collect()
 }
@@ -31,6 +31,10 @@ async fn main() {
             let mut parts = req.uri().path().trim_start_matches('/').split('/');
             let start = parts.next();
             let end = parts.next();
+            let force = match parts.next() {
+                Some("force") => true,
+                _ => false,
+            };
 
             match (start, end) {
                 (Some(start), Some(end)) => {
@@ -44,11 +48,15 @@ async fn main() {
                                     link.to_string(),
                                     &auth,
                                     &topic_name,
+                                    force,
                                 )
                                 .await
                                 {
                                     Ok(link) => {
-                                        println!("Successfully published to queue: {}", link);
+                                        println!(
+                                            "Successfully published to queue: {},{}",
+                                            link, force
+                                        );
                                         successes.push(link)
                                     },
                                     Err(e) => println!("Error publishing to queue: {}", e),

@@ -5,7 +5,7 @@ use std::{error::Error, io::Cursor};
 use chrono::Utc;
 use diesel::{
     r2d2::{ConnectionManager, PooledConnection},
-    PgConnection,
+    PgConnection, QueryDsl, RunQueryDsl,
 };
 use hyper::{header, HeaderMap};
 use image::{
@@ -19,6 +19,7 @@ use serde_json::Value;
 use crate::{
     db::upsert_uris,
     models::{NFTMetadataCrawlerEntry, NFTMetadataCrawlerURIs},
+    schema::nft_metadata_crawler_uris,
 };
 
 pub struct Parser {
@@ -28,10 +29,17 @@ pub struct Parser {
     target_size: (u32, u32),
     bucket: String,
     auth: String,
+    force: bool,
 }
 
 impl Parser {
-    pub fn new(e: NFTMetadataCrawlerEntry, ts: Option<(u32, u32)>, au: String, b: String) -> Self {
+    pub fn new(
+        e: NFTMetadataCrawlerEntry,
+        ts: Option<(u32, u32)>,
+        au: String,
+        b: String,
+        f: bool,
+    ) -> Self {
         Self {
             model: NFTMetadataCrawlerURIs {
                 token_uri: e.token_uri.clone(),
@@ -47,6 +55,7 @@ impl Parser {
             target_size: ts.unwrap_or((400, 400)),
             bucket: b,
             auth: au,
+            force: f,
         }
     }
 
@@ -54,29 +63,66 @@ impl Parser {
         &mut self,
         conn: &mut PooledConnection<ConnectionManager<PgConnection>>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let json = self.parse_json().await?;
-        println!("Successfully parsed {}", self.entry.token_uri);
-        match self.write_json_to_gcs(json).await {
-            Ok(_) => println!("Successfully saved JSON"),
-            Err(_) => println!("Error saving JSON, {}", self.entry.token_uri),
+        if nft_metadata_crawler_uris::table
+            .find(&self.entry.token_uri)
+            .first::<NFTMetadataCrawlerURIs>(conn)
+            .is_ok()
+        {
+            if self.force {
+                self.log("Found URIs entry but forcing parse");
+            } else {
+                self.log("Skipping URI parse");
+                return Ok(());
+            }
         }
 
-        upsert_uris(conn, self.model.clone())?;
-
-        let new_img = self.optimize_image().await?;
-        println!("Successfully optimized image");
-        match self.write_image_to_gcs(new_img).await {
-            Ok(_) => println!("Successfully saved image"),
-            Err(_) => println!("Error saving image {}", self.entry.token_uri),
+        match self.parse_json().await {
+            Ok(json) => {
+                self.log("Successfully parsed JSON");
+                match self.write_json_to_gcs(json).await {
+                    Ok(_) => self.log("Successfully saved JSON"),
+                    Err(e) => self.log(&e.to_string()),
+                }
+            },
+            Err(e) => {
+                self.model.json_parser_retry_count += 1;
+                self.log(&e.to_string())
+            },
         }
 
-        upsert_uris(conn, self.model.clone())?;
+        match upsert_uris(conn, self.model.clone()) {
+            Ok(_) => self.log("Successfully upserted JSON URIs"),
+            Err(e) => self.log(&e.to_string()),
+        }
+
+        match self.optimize_image().await {
+            Ok(new_img) => {
+                self.log("Successfully optimized image");
+                match self.write_image_to_gcs(new_img).await {
+                    Ok(_) => self.log("Successfully saved image"),
+                    Err(e) => self.log(&e.to_string()),
+                }
+            },
+            Err(e) => {
+                self.model.image_resizer_retry_count += 1;
+                self.log(&e.to_string())
+            },
+        }
+
+        match upsert_uris(conn, self.model.clone()) {
+            Ok(_) => self.log("Successfully upserted image URIs"),
+            Err(e) => self.log(&e.to_string()),
+        }
+
         Ok(())
     }
 
     async fn parse_json(&mut self) -> Result<Value, Box<dyn Error + Send + Sync>> {
         for _ in 0..3 {
-            println!("Sending request {}", self.entry.token_uri);
+            self.log(&format!(
+                "Sending request for token_uri {}",
+                self.entry.token_uri
+            ));
             let response = reqwest::get(&self.entry.token_uri).await?;
             let parsed_json = response.json::<Value>().await?;
             if let Some(img) = parsed_json["image"].as_str() {
@@ -106,13 +152,9 @@ impl Parser {
             .await?;
 
         match res.status().as_u16() {
-            200..=299 => {
-                println!("Successfully saved JSON to GCS");
-                Ok(())
-            },
+            200..=299 => Ok(()),
             _ => {
                 let text = res.text().await?;
-                println!("Error saving JSON to GCS: {}", text);
                 Err(format!("Error saving JSON to GCS {}", text).into())
             },
         }
@@ -120,37 +162,38 @@ impl Parser {
 
     async fn optimize_image(&mut self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
         for _ in 0..3 {
-            let img_uri_option = self
+            let img_uri = self
                 .model
                 .raw_image_uri
                 .clone()
-                .or_else(|| Some(self.model.token_uri.clone()));
-            if let Some(img_uri) = img_uri_option {
-                let response = reqwest::get(img_uri.clone()).await?;
-                if response.status().is_success() {
-                    let img_bytes = response.bytes().await?;
-                    self.model.raw_image_uri = Some(img_uri);
-                    let format = image::guess_format(img_bytes.as_ref())?;
-                    self.format = format;
-                    match format {
-                        ImageFormat::Gif | ImageFormat::Avif => return Ok(img_bytes.to_vec()),
-                        _ => match image::load_from_memory(&img_bytes) {
-                            Ok(img) => {
-                                return Ok(Self::to_bytes(resize(
-                                    &img.to_rgb8(),
-                                    self.target_size.0 as u32,
-                                    self.target_size.1 as u32,
-                                    FilterType::Gaussian,
-                                ))?)
-                            },
-                            Err(e) => {
-                                println!("Error converting image to bytes: {}", e);
-                                return Err(
-                                    format!("Error converting image to bytes: {}", e).into()
-                                );
-                            },
+                .unwrap_or(self.model.token_uri.clone());
+
+            self.log(&format!(
+                "Sending request for raw_image_uri {}",
+                img_uri.clone()
+            ));
+
+            let response = reqwest::get(img_uri.clone()).await?;
+            if response.status().is_success() {
+                let img_bytes = response.bytes().await?;
+                self.model.raw_image_uri = Some(img_uri);
+                let format = image::guess_format(img_bytes.as_ref())?;
+                self.format = format;
+                match format {
+                    ImageFormat::Gif | ImageFormat::Avif => return Ok(img_bytes.to_vec()),
+                    _ => match image::load_from_memory(&img_bytes) {
+                        Ok(img) => {
+                            return Ok(self.to_bytes(resize(
+                                &img.to_rgb8(),
+                                self.target_size.0 as u32,
+                                self.target_size.1 as u32,
+                                FilterType::Gaussian,
+                            ))?)
                         },
-                    }
+                        Err(e) => {
+                            return Err(format!("Error converting image to bytes: {}", e).into());
+                        },
+                    },
                 }
             }
         }
@@ -169,7 +212,7 @@ impl Parser {
                 .format
                 .extensions_str()
                 .last()
-                .unwrap_or(&"jpeg")
+                .unwrap_or(&"gif")
                 .to_string(),
             _ => "jpeg".to_string(),
         };
@@ -198,29 +241,30 @@ impl Parser {
             .await?;
 
         match res.status().as_u16() {
-            200..=299 => {
-                println!("Successfully saved image to GCS");
-                Ok(())
-            },
+            200..=299 => Ok(()),
             _ => {
                 let text = res.text().await?;
-                println!("Error saving image to GCS: {}", text);
                 Err(format!("Error saving image to GCS {}", text).into())
             },
         }
     }
 
     fn to_bytes(
+        &self,
         image_buffer: ImageBuffer<image::Rgb<u8>, Vec<u8>>,
     ) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
         let dynamic_image = DynamicImage::ImageRgb8(image_buffer);
         let mut byte_store = Cursor::new(Vec::new());
         match dynamic_image.write_to(&mut byte_store, ImageOutputFormat::Jpeg(50)) {
             Ok(_) => Ok(byte_store.into_inner()),
-            Err(_) => {
-                println!("Error converting image to bytes");
-                Err("Error converting image to bytes".into())
-            },
+            Err(_) => Err("Error converting image to bytes".into()),
         }
+    }
+
+    fn log(&self, message: &str) {
+        println!(
+            "Transaction Version {}: {}",
+            self.entry.last_transaction_version, message
+        );
     }
 }

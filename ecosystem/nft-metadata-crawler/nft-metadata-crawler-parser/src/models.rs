@@ -1,5 +1,7 @@
 // Copyright © Aptos Foundation
 
+use std::error::Error;
+
 use chrono::{NaiveDateTime, Utc};
 use diesel::prelude::*;
 
@@ -16,26 +18,29 @@ pub struct NFTMetadataCrawlerEntry {
 }
 
 impl NFTMetadataCrawlerEntry {
-    pub fn new(s: String) -> Self {
+    pub fn new(s: String) -> Result<(Self, bool), Box<dyn Error + Send + Sync>> {
         let parts: Vec<&str> = s.split(',').collect();
-        if parts.len() == 4 {
-            return Self {
-                token_data_id: parts[0].to_string(),
-                token_uri: parts[1].to_string(),
-                retry_count: 0,
-                last_transaction_version: parts[2]
-                    .to_string()
-                    .parse()
-                    .expect("Error parsing last_transaction_version"),
-                last_transaction_timestamp: NaiveDateTime::parse_from_str(
-                    parts[3],
-                    "%Y-%m-%d %H:%M:%S %Z",
-                )
-                .expect("Error parsing last_transaction_timestamp"),
-                last_updated: Utc::now().naive_utc(),
-            };
+        if parts.len() == 5 {
+            Ok((
+                Self {
+                    token_data_id: parts[0].to_string(),
+                    token_uri: parts[1].to_string(),
+                    retry_count: 0,
+                    last_transaction_version: parts[2].to_string().parse()?,
+                    last_transaction_timestamp: NaiveDateTime::parse_from_str(
+                        parts[3],
+                        "%Y-%m-%d %H:%M:%S %Z",
+                    )
+                    .unwrap_or(NaiveDateTime::parse_from_str(
+                        parts[3],
+                        "%Y-%m-%d %H:%M:%S%.f %Z",
+                    )?),
+                    last_updated: Utc::now().naive_utc(),
+                },
+                parts[4].parse::<bool>().unwrap_or(false),
+            ))
         } else {
-            panic!("Error parsing record");
+            Err("Error parsing record".into())
         }
     }
 }

@@ -5,10 +5,11 @@ use std::{env, error::Error};
 use ::futures::future;
 use diesel::{
     r2d2::{ConnectionManager, Pool},
-    PgConnection,
+    PgConnection, QueryDsl, RunQueryDsl,
 };
 use nft_metadata_crawler_parser::{
     db::upsert_entry, establish_connection_pool, models::NFTMetadataCrawlerEntry, parser::Parser,
+    schema::nft_metadata_crawler_entry,
 };
 use nft_metadata_crawler_utils::{consume_from_queue, send_ack};
 use reqwest::Client;
@@ -16,14 +17,45 @@ use tokio::task::JoinHandle;
 
 async fn process_response(
     res: Vec<String>,
+    acks: &Vec<String>,
+    auth: &String,
+    subscription_name: &String,
     pool: &Pool<ConnectionManager<PgConnection>>,
-) -> Result<Vec<NFTMetadataCrawlerEntry>, Box<dyn Error + Send + Sync>> {
-    let mut uris: Vec<NFTMetadataCrawlerEntry> = Vec::new();
-    for entry in res {
-        uris.push(upsert_entry(
-            &mut pool.get()?,
-            NFTMetadataCrawlerEntry::new(entry),
-        )?);
+) -> Result<Vec<(NFTMetadataCrawlerEntry, bool)>, Box<dyn Error + Send + Sync>> {
+    let mut uris: Vec<(NFTMetadataCrawlerEntry, bool)> = Vec::new();
+    for (entry, ack) in res.into_iter().zip(acks.into_iter()) {
+        let (entry_struct, force) = NFTMetadataCrawlerEntry::new(entry)?;
+        let mut conn = pool.get()?;
+        if nft_metadata_crawler_entry::table
+            .find(&entry_struct.token_data_id)
+            .first::<NFTMetadataCrawlerEntry>(&mut conn)
+            .is_ok()
+        {
+            if force {
+                println!(
+                    "Transaction Version {}: Found NFT entry but forcing parse",
+                    entry_struct.last_transaction_version
+                );
+            } else {
+                println!(
+                    "Transaction Version {}: Skipping parse",
+                    entry_struct.last_transaction_version
+                );
+                let client = Client::new();
+                match send_ack(&client, &auth, &subscription_name, &ack).await {
+                    Ok(_) => println!(
+                        "Transaction Version {}: Successfully acked",
+                        entry_struct.last_transaction_version
+                    ),
+                    Err(e) => println!(
+                        "Transaction Version {}: Error acking - {}",
+                        entry_struct.last_transaction_version, e
+                    ),
+                }
+                continue;
+            }
+        }
+        uris.push((upsert_entry(&mut pool.get()?, entry_struct)?, force))
     }
     Ok(uris)
 }
@@ -35,24 +67,34 @@ fn spawn_parser(
     subscription_name: String,
     ack: String,
     bucket: String,
+    force: bool,
 ) -> JoinHandle<()> {
     match pool.get() {
         Ok(mut conn) => tokio::spawn(async move {
-            let mut parser = Parser::new(uri, Some((400, 400)), auth.clone(), bucket);
+            let mut parser = Parser::new(uri, Some((400, 400)), auth.clone(), bucket, force);
             match parser.parse(&mut conn).await {
                 Ok(()) => {
                     let client = Client::new();
                     match send_ack(&client, &auth, &subscription_name, &ack).await {
                         Ok(_) => {
-                            println!("Successfully acked {}", parser.entry.token_uri)
+                            println!(
+                                "Transaction Version {}: Successfully acked",
+                                parser.entry.last_transaction_version
+                            )
                         },
-                        Err(e) => println!("Error acking {}: {}", parser.entry.token_uri, e),
+                        Err(e) => println!(
+                            "Transaction Version {}: Error acking - {}",
+                            parser.entry.last_transaction_version, e
+                        ),
                     }
                 },
-                Err(e) => println!("Error parsing {}: {}", parser.entry.token_uri, e),
+                Err(e) => println!(
+                    "Transaction Version {}: Error parsing - {}",
+                    parser.entry.last_transaction_version, e
+                ),
             }
         }),
-        Err(_) => todo!(),
+        Err(_) => tokio::spawn(async move { println!("Error getting connection from pool") }),
     }
 }
 
@@ -68,13 +110,13 @@ async fn main() {
     match consume_from_queue(&client, &auth, &subscription_name).await {
         Ok(r) => {
             let (res, acks): (Vec<String>, Vec<String>) = r.into_iter().unzip();
-            match process_response(res, &pool).await {
+            match process_response(res, &acks, &auth, &subscription_name, &pool).await {
                 Ok(uris) => {
                     let handles: Vec<_> = uris
                         .into_iter()
                         .zip(acks.into_iter())
                         .into_iter()
-                        .map(|(uri, ack)| {
+                        .map(|((uri, force), ack)| {
                             spawn_parser(
                                 uri,
                                 &pool,
@@ -82,6 +124,7 @@ async fn main() {
                                 subscription_name.clone(),
                                 ack,
                                 bucket.clone(),
+                                force,
                             )
                         })
                         .collect();

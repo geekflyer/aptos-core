@@ -10,6 +10,7 @@ pub async fn publish_to_queue(
     msg: String,
     auth: &String,
     topic_name: &String,
+    force: bool,
 ) -> Result<String, Box<dyn Error + Send + Sync>> {
     let url = format!("https://pubsub.googleapis.com/v1/{}:publish", topic_name);
 
@@ -19,7 +20,7 @@ pub async fn publish_to_queue(
         .json(&json!({
             "messages": [
                 {
-                    "data": base64::encode(msg.clone())
+                    "data": base64::encode(format!("{},{}", msg.clone(), force))
                 }
             ]
         }))
@@ -46,7 +47,7 @@ pub async fn consume_from_queue(
         .post(&url)
         .bearer_auth(auth)
         .json(&json!({
-            "maxMessages": 5
+            "maxMessages": 100
         }))
         .send()
         .await?;
