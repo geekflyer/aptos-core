@@ -1,7 +1,6 @@
 CREATE TABLE nft_metadata_crawler_entry (
   token_data_id VARCHAR UNIQUE PRIMARY KEY NOT NULL,
   token_uri VARCHAR NOT NULL,
-  retry_count INT NOT NULL,
   last_transaction_version INT NOT NULL,
   last_transaction_timestamp TIMESTAMP NOT NULL,
   last_updated TIMESTAMP NOT NULL DEFAULT NOW()

@@ -11,7 +11,6 @@ use diesel::prelude::*;
 pub struct NFTMetadataCrawlerEntry {
     pub token_data_id: String,
     pub token_uri: String,
-    pub retry_count: i32,
     pub last_transaction_version: i32,
     pub last_transaction_timestamp: chrono::NaiveDateTime,
     pub last_updated: chrono::NaiveDateTime,
@@ -25,7 +24,6 @@ impl NFTMetadataCrawlerEntry {
                 Self {
                     token_data_id: parts[0].to_string(),
                     token_uri: parts[1].to_string(),
-                    retry_count: 0,
                     last_transaction_version: parts[2].to_string().parse()?,
                     last_transaction_timestamp: NaiveDateTime::parse_from_str(
                         parts[3],

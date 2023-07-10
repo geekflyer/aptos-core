@@ -6,7 +6,6 @@ diesel::table! {
     nft_metadata_crawler_entry (token_data_id) {
         token_data_id -> Varchar,
         token_uri -> Varchar,
-        retry_count -> Int4,
         last_transaction_version -> Int4,
         last_transaction_timestamp -> Timestamp,
         last_updated -> Timestamp,

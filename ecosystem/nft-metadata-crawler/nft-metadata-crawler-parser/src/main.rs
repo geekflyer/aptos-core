@@ -107,34 +107,31 @@ async fn main() {
     let subscription_name = env::var("SUBSCRIPTION_NAME").expect("No SUBSCRIPTION NAME");
     let bucket = env::var("BUCKET").expect("No BUCKET");
 
-    match consume_from_queue(&client, &auth, &subscription_name).await {
-        Ok(r) => {
-            let (res, acks): (Vec<String>, Vec<String>) = r.into_iter().unzip();
-            match process_response(res, &acks, &auth, &subscription_name, &pool).await {
-                Ok(uris) => {
-                    let handles: Vec<_> = uris
-                        .into_iter()
-                        .zip(acks.into_iter())
-                        .into_iter()
-                        .map(|((uri, force), ack)| {
-                            spawn_parser(
-                                uri,
-                                &pool,
-                                auth.clone(),
-                                subscription_name.clone(),
-                                ack,
-                                bucket.clone(),
-                                force,
-                            )
-                        })
-                        .collect();
-                    if let Ok(_) = future::try_join_all(handles).await {
-                        println!("SUCCESS");
-                    }
-                },
-                Err(e) => println!("Error processing response: {}", e),
-            };
-        },
-        Err(e) => println!("Error consuming from queue: {}", e),
+    while let Ok(r) = consume_from_queue(&client, &auth, &subscription_name).await {
+        let (res, acks): (Vec<String>, Vec<String>) = r.into_iter().unzip();
+        match process_response(res, &acks, &auth, &subscription_name, &pool).await {
+            Ok(uris) => {
+                let handles: Vec<_> = uris
+                    .into_iter()
+                    .zip(acks.into_iter())
+                    .into_iter()
+                    .map(|((uri, force), ack)| {
+                        spawn_parser(
+                            uri,
+                            &pool,
+                            auth.clone(),
+                            subscription_name.clone(),
+                            ack,
+                            bucket.clone(),
+                            force,
+                        )
+                    })
+                    .collect();
+                if let Ok(_) = future::try_join_all(handles).await {
+                    println!("SUCCESS");
+                }
+            },
+            Err(e) => println!("Error processing response: {}", e),
+        };
     }
 }

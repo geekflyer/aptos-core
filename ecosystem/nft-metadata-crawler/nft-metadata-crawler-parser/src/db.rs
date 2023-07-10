@@ -25,7 +25,6 @@ pub fn upsert_entry(
             .do_update()
             .set((
                 token_uri.eq(excluded(token_uri)),
-                retry_count.eq(excluded(retry_count)),
                 last_transaction_version.eq(excluded(last_transaction_version)),
                 last_transaction_timestamp.eq(excluded(last_transaction_timestamp)),
                 last_updated.eq(excluded(last_updated)),

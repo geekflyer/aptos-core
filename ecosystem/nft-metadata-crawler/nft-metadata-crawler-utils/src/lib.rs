@@ -47,7 +47,7 @@ pub async fn consume_from_queue(
         .post(&url)
         .bearer_auth(auth)
         .json(&json!({
-            "maxMessages": 100
+            "maxMessages": 10
         }))
         .send()
         .await?;
